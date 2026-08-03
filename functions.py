@@ -14,7 +14,9 @@ def get_context(event_probs, left, right):
     return context #context in samples   
 
 def get_tfr(data, freqs, baseline, avg=False, jobs=2, decim=1, cycles=2):
-    return data.compute_tfr(method="morlet", freqs=freqs, n_cycles=cycles, use_fft=True, average=avg, n_jobs=jobs, decim=decim).apply_baseline(baseline, mode='logratio') # Db?
+    tfr = data.compute_tfr(method="morlet", freqs=freqs, n_cycles=cycles, use_fft=True, average=avg, n_jobs=jobs, decim=decim, return_itc=False).apply_baseline(baseline, mode='logratio') # Db?
+    tfr._data = tfr._data*10
+    return tfr
     
 
 def get_tfr_events(tfr, probs, left, right, sfreq, decim=1):
@@ -47,8 +49,24 @@ def get_tfr_events(tfr, probs, left, right, sfreq, decim=1):
 
 def plot_tfr_event(tfr, channels, title, lim):
     _, ax = plt.subplots()
-    tfr.plot(axes=ax, picks=channels, vlim=lim, title=title, show=False)
+    tfr.plot(axes=ax, picks=channels, vlim=lim, title=title, show=False, cmap='turbo')
     t_event = ax.get_xticks()[-1]/2
     ax.axvline(x=t_event, color='grey', linestyle='--', label='Event')
     ax.set_xticklabels([round(x - t_event, 2) for x in ax.get_xticks()])
+    plt.show()
+
+def plot_topomaps(tfr):
+    fig, ax = plt.subplots(2,3, figsize=(24,16))
+    ax[0,0].set_title("Delta")
+    tfr.plot_topomap(axes=ax[0,0], tmin=0, tmax=0.8, fmin=1, fmax=4, show_names=True, show=False, cmap='turbo')
+    ax[0,1].set_title("Theta")
+    tfr.plot_topomap(axes=ax[0,1], tmin=0, tmax=0.8, fmin=4, fmax=8, show_names=True, show=False, cmap='turbo')
+    ax[0,2].set_title("Theta")
+    tfr.plot_topomap(axes=ax[0,2], tmin=0, tmax=0.8, fmin=8, fmax=12, show_names=True, show=False, cmap='turbo')
+    ax[1,0].set_title("Beta")
+    tfr.plot_topomap(axes=ax[1,0], tmin=0, tmax=0.8, fmin=12, fmax=25, show_names=True, show=False, cmap='turbo')
+    ax[1,1].set_title("Theta")
+    tfr.plot_topomap(axes=ax[1,1], tmin=0, tmax=0.8, fmin=25, show_names=True, show=False, cmap='turbo')
+    ax[1,2].set_title("Total")
+    tfr.plot_topomap(axes=ax[1,2], tmin=0, tmax=0.8, show_names=True, show=False, cmap='turbo')
     plt.show()
