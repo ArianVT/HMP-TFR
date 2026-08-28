@@ -2,6 +2,7 @@ import numpy as np
 import copy
 import math
 import matplotlib.pyplot as plt
+import mne
 
 def get_context(event_probs, left, right):
     event = np.argmax(event_probs)
@@ -55,16 +56,64 @@ def get_tfr_events(tfr, probs, left, right, sfreq, log=True):
     if log: print("retreived TFR events succesfully")
     return tfr_events
 
-def plot_tfr_event(tfr, channels, title, lim):
-    _, ax = plt.subplots()
-    tfr.plot(axes=ax, picks=channels, vlim=lim, title=title, show=False, cmap='turbo', combine='mean')
-    t_event = ax.get_xticks()[-1]/2
-    ax.axvline(x=t_event, color='grey', linestyle='--', label='Event')
-    ax.set_xticklabels([round(x - t_event, 2) for x in ax.get_xticks()])
+def get_itc_events(epochs, probs, sfreq, freqs, info, cycles=2, jobs=1, log=True):
+    itc_events = []
+
+    for event in range(probs.shape[1]):
+        if log: print(f"event: {event}, trial: ----", end='\r')                                      
+        itc_event = []
+
+        #add the centred data for every trail using context
+        for trial in range(epochs._data.shape[0]):
+            if log: print(f"event: {event}, trial: {trial + 1}", end='\r', flush=True)                 
+            _, center, _ = get_context(probs[trial, event, :], 20, 20)
+            center = int(center) - 1
+            if center > 0:
+                itc_event.append((epochs._data[trial, :, :center], epochs._data[trial, :, center], epochs._data[trial, :, center+1:]))
+
+        if len(itc_event) > 0:
+            center, data = center_matrix(itc_event)
+            centred_epochs = mne.EpochsArray(np.nan_to_num(data, nan=0.0), info, tmin=-(center/sfreq))
+            itc_event = get_itc(centred_epochs, freqs, jobs=jobs, cycles=cycles)
+
+        itc_events.append(itc_event)
+
+    return itc_events
+
+
+def plot_tfrs(tfr, events, channels, labels, x_axis):
+    _, ax = plt.subplots(2,3, figsize=(24,16))
+    for n, event in enumerate(events):
+        x = (3+n)%3
+        y = math.floor(n/3)
+        ax[y,x].set_title(labels[n])
+        if np.any(~np.isnan(event._data)):
+            event.plot(axes=ax[y,x], picks=channels, vlim=(-3,3), show=False, cmap='turbo', combine='mean')
+            t_event = ax[y,x].get_xticks()[-1]/2
+            ax[y,x].axvline(x=t_event, color='grey', linestyle='--', label='Event')
+            ax[y,x].set_xticklabels([round(x - t_event, 2) for x in ax[y,x].get_xticks()])
+
+    ax[1,2].set_title("Total")
+    tfr.plot(picks=channels, axes=ax[1,2], tmin=x_axis[0], tmax=x_axis[1], vlim=(-3,3), show=False, cmap='turbo', combine='mean')        
+
+    plt.show()
+
+def plot_itcs(itc, events, channels, labels, x_axis):
+    _, ax = plt.subplots(2,3, figsize=(24,16))
+    for n, event in enumerate(events):
+        x = (3+n)%3
+        y = math.floor(n/3)
+        ax[y,x].set_title(labels[n])
+        if type(event) != list:
+            event.plot(picks=channels, axes=ax[y,x], vlim=(0,1), show=False, tmax=1, tmin=-1, title=labels[n], cmap='turbo', combine='mean')
+
+    ax[1,2].set_title("Total")
+    itc.plot(picks=channels, axes=ax[1,2], vlim=(0,1), show=False, tmax=1, tmin=-1, title=labels[n], cmap='turbo', combine='mean')
+
     plt.show()
 
 def plot_topomaps(tfr):
-    fig, ax = plt.subplots(2,3, figsize=(24,16))
+    _, ax = plt.subplots(2,3, figsize=(24,16))
     ax[0,0].set_title("Delta")
     tfr.plot_topomap(axes=ax[0,0], tmin=0, tmax=0.8, fmin=1, fmax=4, show_names=True, show=False, cmap='turbo')
     ax[0,1].set_title("Theta")
@@ -78,3 +127,14 @@ def plot_topomaps(tfr):
     ax[1,2].set_title("Total")
     tfr.plot_topomap(axes=ax[1,2], tmin=0, tmax=0.8, show_names=True, show=False, cmap='turbo')
     plt.show()
+
+def center_matrix(epochs):
+    left = np.amax([epochs[x][0].shape[1] for x in range(len(epochs))])
+    right = np.amax([epochs[x][2].shape[1] for x in range(len(epochs))])
+    event_data = np.full([len(epochs), 64, left + right + 1], np.nan)
+    for n, epoch in enumerate(epochs):
+        event_data[n, :, (left-epoch[0].shape[1]):left] = epoch[0]
+        event_data[n, :, left] = epoch[1]
+        event_data[n, :, (left+1):((left+1) + epoch[2].shape[1])] = epoch[2]
+
+    return left, event_data
