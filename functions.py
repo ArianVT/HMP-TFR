@@ -76,6 +76,7 @@ def get_itc_events(epochs, probs, sfreq, freqs, info, cycles=2, jobs=1, log=True
             centred_epochs = mne.EpochsArray(np.nan_to_num(data, nan=0.0), info, tmin=-(center/sfreq))
             itc_event = get_itc(centred_epochs, freqs, jobs=jobs, cycles=cycles)
 
+        print(f"event {event}:{center}")
         itc_events.append(itc_event)
 
     return itc_events
@@ -98,17 +99,19 @@ def plot_tfrs(tfr, events, channels, labels, x_axis):
 
     plt.show()
 
-def plot_itcs(itc, events, channels, labels, x_axis):
+def plot_itcs(itc, events, channels, labels):
     _, ax = plt.subplots(2,3, figsize=(24,16))
     for n, event in enumerate(events):
         x = (3+n)%3
         y = math.floor(n/3)
         ax[y,x].set_title(labels[n])
         if type(event) != list:
-            event.plot(picks=channels, axes=ax[y,x], vlim=(0,1), show=False, tmax=1, tmin=-1, title=labels[n], cmap='turbo', combine='mean')
+            for channel in channels:
+                tmin, tmax = adaptive_xaxis(event)
+                event.plot(picks=channel, axes=ax[y,x], tmin=tmin, tmax=tmax, vlim=(0,1), show=False, cmap='turbo', combine='mean')
 
     ax[1,2].set_title("Total")
-    itc.plot(picks=channels, axes=ax[1,2], vlim=(0,1), show=False, tmax=1, tmin=-1, title=labels[n], cmap='turbo', combine='mean')
+    itc.plot(picks=channels, axes=ax[1,2], vlim=(0,1), tmin=-0.2, tmax=1, show=False, cmap='turbo', combine='mean')
 
     plt.show()
 
@@ -138,3 +141,22 @@ def center_matrix(epochs):
         event_data[n, :, (left+1):((left+1) + epoch[2].shape[1])] = epoch[2]
 
     return left, event_data
+
+def adaptive_xaxis(event):
+    i = 0
+    left = -np.inf
+    right = np.inf 
+
+    while True:
+        if np.isnan(event._data[:,:, int(event.tmin*-200 + i)]).any():
+            if right == np.inf:
+                right = i - 1
+
+        if np.isnan(event._data[:,:, int(event.tmin*-200 - i)]).any():
+            if left == -np.inf:
+                left = i - 1
+
+        if left > -np.inf and right < np.inf:
+            return -left/event.sfreq, right/event.sfreq
+
+        i += 1
