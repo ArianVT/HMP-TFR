@@ -19,7 +19,7 @@ def get_itc(data, freqs, jobs=2, cycles=2):
     _, itc = data.compute_tfr(method="morlet", freqs=freqs, n_cycles=cycles, use_fft=True, average=True, n_jobs=jobs, return_itc=True)                            
     return itc
 
-def get_events(matrix, probs, freqs, info, labels, baseline=None, instance='tfr', cycles=2, jobs=1, log=True):
+def get_events(matrix, probs, freqs, info, labels, instance='tfr', cycles=2, jobs=1, log=True):
     events = []
 
     for n_event in range(probs.shape[1]):
@@ -47,6 +47,7 @@ def get_events(matrix, probs, freqs, info, labels, baseline=None, instance='tfr'
                     del centred_matrix #delete centred matrix to save data
                     event._data[event._data == -np.inf] = np.nan
                 case 'itc':
+                    print(f"center: {center}")
                     centred_epochs = mne.EpochsArray(np.nan_to_num(centred_matrix, nan=0.0), info, tmin=-(center/info['sfreq']))
                     event = get_itc(centred_epochs, freqs, jobs=jobs, cycles=cycles)
 
@@ -54,7 +55,7 @@ def get_events(matrix, probs, freqs, info, labels, baseline=None, instance='tfr'
 
     return events
 
-def plot_events(total, events, channels, x_axis='adaptive', instance='tfr', topo=True):
+def plot_events(total, events, channels, centers, x_axis='adaptive', instance='tfr', topo=True, offset=0):
 
     #set z-axis
     match instance:
@@ -80,11 +81,18 @@ def plot_events(total, events, channels, x_axis='adaptive', instance='tfr', topo
         ax1[y,x].set_title(label)
         event.plot(axes=ax1[y,x], picks=channels, vlim=vlim, tmin=tmin, tmax=tmax, show=False, cmap='turbo', combine='mean')
         ax1[y,x].axvline(x=0, color='grey', linestyle='--', label='Event')
+  
+
 
     #plot total
     ax1[1,2].set_title("Total")
     tmin, tmax = adaptive_xaxis(total)
-    total.plot(picks=channels, axes=ax1[1,2], tmin=tmin, tmax=tmax, vlim=vlim, show=False, cmap='turbo', combine='mean') 
+    total.plot(picks=channels, axes=ax1[1,2], tmin=tmin, tmax=tmax, vlim=vlim, show=False, cmap='turbo', combine='mean')
+    old_ticks = ax1[1,2].get_xticks()[1:-1] 
+    ax1[1,2].set_xticks(total.times[int(tmin*total.sfreq):int(tmax*total.sfreq)])
+    for center in centers:
+        ax1[1,2].axvline(x=round((center)/total.sfreq+min(total.tmin,0),3), color='grey', linestyle='--', label='Event')
+    ax1[1,2].set_xticks(old_ticks)
 
     #plot topo
     if topo:
@@ -101,10 +109,10 @@ def plot_events(total, events, channels, x_axis='adaptive', instance='tfr', topo
             y = math.floor(n/3)
     
             ax2[y,x].set_title(label)
-            total.plot_topomap(axes=ax2[y,x], tmin=tmin, tmax=tmax - 0.2, fmin=fmin, fmax=fmax, show_names=True, show=False, cmap='turbo')
+            total.plot_topomap(axes=ax2[y,x], tmin=tmin, tmax=tmax-offset, fmin=fmin, fmax=fmax, vlim=vlim, show_names=True, show=False, cmap='turbo')
 
         ax2[1,2].set_title("Total")
-        total.plot_topomap(axes=ax2[1,2], tmin=tmin, tmax=tmax - 0.2, show_names=True, show=False, cmap='turbo')      
+        total.plot_topomap(axes=ax2[1,2], tmin=tmin, tmax=tmax-offset, vlim=vlim, show_names=True, show=False, cmap='turbo')      
 
     plt.show()
 
@@ -121,7 +129,7 @@ def center_matrix(matrix, instance='tfr'):
                         event_data[n, :, :, (left-epoch[0].shape[2]):left] = epoch[0]
                         event_data[n, :, :, left] = epoch[1]
                         event_data[n, :, :, (left+1):((left+1) + epoch[2].shape[2])] = epoch[2]
-                        
+
         case 'itc': #center epochs (trials, channels, time)
             #create empty matrix
             left = np.amax([matrix[x][0].shape[1] for x in range(len(matrix))])
@@ -156,3 +164,4 @@ def adaptive_xaxis(event):
             return -left/event.sfreq, right/event.sfreq
         else:
             i += 1
+        
