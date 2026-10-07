@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import mne
 import os
 import copy
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 def get_center(event_probs):
     return np.argmax(event_probs)
@@ -21,16 +22,14 @@ def get_itc(data, freqs, jobs=2, cycles=2):
     _, itc = data.compute_tfr(method="morlet", freqs=freqs, n_cycles=cycles, use_fft=True, average=True, n_jobs=jobs, return_itc=True)                         
     return itc
 
-def get_events(matrix, probs, freqs, info, labels, instance='tfr', cycles=2, jobs=1, log=True):
+def get_events(matrix, probs, freqs, info, labels, instance='tfr', cycles=2, jobs=1):
     events = []
 
-    for n_event in range(probs.shape[1]):
-        if log: print(f"event: {n_event}, trial: ----", end='\r')                                      
+    for n_event in range(probs.shape[1]):                                   
         event = []
 
         #add the centred data for every trail using context
-        for trial in range(matrix.shape[0]):
-            if log: print(f"event: {n_event}, trial: {trial + 1}", end='\r', flush=True)                 
+        for trial in range(matrix.shape[0]):                
             center = int(get_center(probs[trial, n_event, :])) - 1
 
             if center > 0: #only add the data if an event onset was found
@@ -51,13 +50,16 @@ def get_events(matrix, probs, freqs, info, labels, instance='tfr', cycles=2, job
                     centred_epochs = mne.EpochsArray(np.nan_to_num(centred_matrix, nan=0.0), info, tmin=-(center/info['sfreq']))
                     event = get_itc(centred_epochs, freqs, jobs=jobs, cycles=cycles)
                     del centred_matrix #delete centred matrix to save data
+                case 'epochs':
+                    center, centred_matrix = center_matrix(event, instance=instance)
+                    event = mne.EpochsArray(np.nan_to_num(centred_matrix, nan=0.0), info, tmin=-(center/info['sfreq']))
 
 
             events.append((event, f"{n_event}_{labels[n_event]}")) #add event to the events list
 
     return events
 
-def plot_events(dict, channels, centers, x_axis='adaptive', instance='tfr', topo=True, phases=None, offset=0):
+def plot_events(dict, channels, centers, x_axis='adaptive', instance='tfr', topo=True, phases=None):
     total = dict['total']
     events = copy.deepcopy(dict)
     events.pop('total')
@@ -65,14 +67,16 @@ def plot_events(dict, channels, centers, x_axis='adaptive', instance='tfr', topo
     #set z-axis
     match instance:
         case 'itc':
-            vlim = (0,1)
+            vlim = (0, 0.4)
         case 'tfr':
-            vlim = (-3,3)
+            vlim = (-3, 3)
 
     #create subplots
     match phases: 
         case None: _, ax1 = plt.subplots(2,3, figsize=(24,16))  #2x3 subplots
         case _: _, ax1 = plt.subplots(4,3, figsize=(24,32))     #4x2 subplots
+
+    if topo: _, ax2 = plt.subplots(2,3, figsize=(24,16))
              
     #plot per event  
     for n, (label, event) in enumerate(events.items()):
@@ -88,8 +92,15 @@ def plot_events(dict, channels, centers, x_axis='adaptive', instance='tfr', topo
 
         #plot event
         ax1[y,x].set_title(label)
-        event.plot(axes=ax1[y,x], picks=channels, vlim=vlim, tmin=tmin, tmax=tmax, show=False, cmap='turbo', combine='mean')
+        event.plot(axes=ax1[y,x], picks=channels, tmin=tmin, tmax=tmax, show=False, cmap='turbo', vlim=vlim, combine='mean')
         ax1[y,x].axvline(x=0, color='grey', linestyle='--', label='Event')
+
+
+        #it given, plot topo map
+        if topo:
+            if phases == None: event.plot_topomap(axes=ax2[math.floor(n/3), (3+n)%3], tmin=0, tmax=0, vlim=vlim, show_names=True, show=False, cmap='turbo')
+            else: mne.viz.plot_topomap(phases[label][0][:, phases[label][1]], dict[label].info, axes=ax2[math.floor(n/3), (3+n)%3], show=False, cmap='turbo', names=dict[label].info['ch_names'])
+            ax2[math.floor(n/3), (3+n)%3].set_title(label)
 
         #if given, plot phase variance
         if phases != None: 
@@ -103,6 +114,7 @@ def plot_events(dict, channels, centers, x_axis='adaptive', instance='tfr', topo
 
             lower =  max(0,center-50)
             upper = center+50 
+
             ax1[y+1,x].plot(data[lower:upper])
             ax1[y+1,x].set_xticklabels([((x+lower)-center)/total.sfreq for x in ax1[y+1,x].get_xticks()])
             pos = ax1[y+1, x].get_position()
@@ -110,6 +122,8 @@ def plot_events(dict, channels, centers, x_axis='adaptive', instance='tfr', topo
             ax1[y+1, x].set_position([pos.x0, pos.y0+0.09, pos.width*0.8, pos.height*0.5])
             ax1[y+1, x].set_xlabel('Time(s)')
             ax1[y+1, x].set_ylabel('Phase variance')
+            
+
 
     #plot total
     match phases:
@@ -123,26 +137,6 @@ def plot_events(dict, channels, centers, x_axis='adaptive', instance='tfr', topo
     ax1[y,x].set_xticks(total.times[int(tmin*total.sfreq):int(tmax*total.sfreq)])
     for center in centers: ax1[y,x].axvline(x=round((center)/total.sfreq+min(total.tmin,0),3), color='grey', linestyle='--', label='Event')
     ax1[y,x].set_xticks(old_ticks)
-
-    #if given, plot topo
-    if topo:
-        _, ax2 = plt.subplots(2,3, figsize=(24,16))
-        bands = [
-            ((1,4),"Delta"),
-            ((4,8),"Theta"),
-            ((8,12),"Alpha"),
-            ((12,25),"Beta"),
-            ((25,40),"Gamma"),
-        ]
-        for n, ((fmin, fmax), label) in enumerate(bands):
-            x = (3+n)%3
-            y = math.floor(n/3)
-    
-            ax2[y,x].set_title(label)
-            total.plot_topomap(axes=ax2[y,x], tmin=tmin, tmax=tmax-offset, fmin=fmin, fmax=fmax, vlim=vlim, show_names=True, show=False, cmap='turbo')
-
-        ax2[1,2].set_title("Total")
-        total.plot_topomap(axes=ax2[1,2], tmin=tmin, tmax=tmax-offset, vlim=vlim, show_names=True, show=False, cmap='turbo')     
 
     plt.show()
 
@@ -175,7 +169,7 @@ def center_matrix(matrix, instance='tfr'):
 
     return left, event_data
 
-def adaptive_xaxis(event):
+def adaptive_xaxis(event, measure='time'):
     i = 0
     left = -np.inf
     right = np.inf 
@@ -191,47 +185,54 @@ def adaptive_xaxis(event):
                 left = i - 1
 
         #return if both sides have found an NaN, extend if not
-        if left > -np.inf and right < np.inf: 
-            return -left/event.sfreq, right/event.sfreq
+        if left > -np.inf and right < np.inf:
+            match measure: 
+                case 'time': return -left/event.sfreq, right/event.sfreq
+                case 'samples': return int((-event.tmin*event.sfreq) - left), int((-event.tmin*event.sfreq) + right + 1)
         else:
             i += 1
 
-def combine_participants(directory_name, centers=None, instance='tfr'):
+def combine_participants(directory_name, centers=None, instance='tfr', combine=True):
     dict = {}
     match instance:
         case 'tfr' | 'itc':
             for participant in os.scandir(f"output/{directory_name}/{instance}"):
-                for event in os.scandir(f"output/{directory_name}/{instance}/{participant.name}"):
-                    if event.name.startswith("total"): event_name = 'total'
-                    else: event_name = f"{event.name.split("_")[0]}: {event.name.split("_")[1]}"
-                    
-                    if event_name not in dict.keys(): 
-                        dict.update({event_name: [mne.time_frequency.read_tfrs(event.path)]})
-                    else: 
-                        dict[event_name].append(mne.time_frequency.read_tfrs(event.path))
+                if not participant.name.endswith(".pkl"):
+                    for event in os.scandir(f"output/{directory_name}/{instance}/{participant.name}"):
+                        if event.name.startswith("total"): event_name = 'total'
+                        else: event_name = f"{event.name.split("_")[0]}: {event.name.split("_")[1]}"
+                        
+                        if event_name not in dict.keys(): 
+                            dict.update({event_name: [mne.time_frequency.read_tfrs(event.path)]})
+                        else: 
+                            dict[event_name].append(mne.time_frequency.read_tfrs(event.path))
 
             for key, matrix in dict.items():
                 tmin = np.amax([matrix[x].tmin for x in range(len(matrix))])
                 tmax = np.amin([matrix[x].tmax for x in range(len(matrix))])
                 cropped_matrix = [tfr.crop(tmin=tmin, tmax=tmax) for tfr in matrix]
 
-                total = cropped_matrix[0]
-                for i in range(len(cropped_matrix)-1):
-                    total = total.__add__(cropped_matrix[i+1])
+                if combine:
+                    total = cropped_matrix[0]
+                    for i in range(len(cropped_matrix)-1):
+                        total = total.__add__(cropped_matrix[i+1])
 
-                total._data /= len(cropped_matrix)
-                dict[key] = total
+                    total._data /= len(cropped_matrix)
+                    dict[key] = total
+                else:
+                    dict[key] = cropped_matrix
 
         case 'phases':
             for participant in os.scandir(f"output/{directory_name}/{instance}"):
-                for event in os.scandir(f"output/{directory_name}/{instance}/{participant.name}"):
-                    if event.name.startswith("total"): event_name = 'total'
-                    else: event_name = f"{event.name.split("_")[0]}: {event.name.split("_")[1]}"
-                    
-                    if event_name not in dict.keys(): 
-                        dict.update({event_name: [(np.load(event.path), int(event.name.split("_")[2]))]})
-                    else: 
-                        dict[event_name].append((np.load(event.path), int(event.name.split("_")[2])))
+                if not participant.name.endswith(".pkl"):
+                    for event in os.scandir(f"output/{directory_name}/{instance}/{participant.name}"):
+                        if event.name.startswith("total"): event_name = 'total'
+                        else: event_name = f"{event.name.split("_")[0]}: {event.name.split("_")[1]}"
+                        
+                        if event_name not in dict.keys(): 
+                            dict.update({event_name: [(np.load(event.path), int(event.name.split("_")[2]))]})
+                        else: 
+                            dict[event_name].append((np.load(event.path), int(event.name.split("_")[2])))
 
             for key, matrix in dict.items():
                 t_left = np.amin([matrix[x][1] for x in range(len(matrix))])
@@ -242,12 +243,15 @@ def combine_participants(directory_name, centers=None, instance='tfr'):
                     center = matrix[x][1]
                     cropped_matrix.append(phases[:, center-t_left:center+t_right])
 
-                total = cropped_matrix[0]
-                for i in range(len(cropped_matrix)-1):
-                    total += cropped_matrix[i+1]
+                if combine: 
+                    total = cropped_matrix[0]
+                    for i in range(len(cropped_matrix)-1):
+                        total += cropped_matrix[i+1]
 
-                total /= len(cropped_matrix)
-                dict[key] = (total, t_left) 
+                    total /= len(cropped_matrix)
+                    dict[key] = (total, t_left)
+                else:
+                    dict[key] = cropped_matrix 
     
     if centers != None: return (dict, centers)
     else: return dict          
