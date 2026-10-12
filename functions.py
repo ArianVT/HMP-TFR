@@ -59,17 +59,18 @@ def get_events(matrix, probs, freqs, info, labels, instance='tfr', cycles=2, job
 
     return events
 
-def plot_events(dict, channels, centers, x_axis='adaptive', instance='tfr', topo=True, phases=None):
+def plot_events(dict, channels, centers, x_axis='adaptive', instance='tfr', topo=True, phases=None, vlim=None):
     total = dict['total']
     events = copy.deepcopy(dict)
     events.pop('total')
 
     #set z-axis
-    match instance:
-        case 'itc':
-            vlim = (0, 0.4)
-        case 'tfr':
-            vlim = (-3, 3)
+    if vlim == None:
+        match instance:
+            case 'itc':
+                vlim = (0, 1)
+            case 'tfr':
+                vlim = (-3, 3)
 
     #create subplots
     match phases: 
