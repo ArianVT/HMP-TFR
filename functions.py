@@ -1,7 +1,6 @@
 import numpy as np
 import math
 import matplotlib.pyplot as plt
-import matplotlib.colors as colors
 import mne
 import os
 import copy
@@ -22,7 +21,18 @@ def get_itc(data, freqs, jobs=2, cycles=2):
     _, itc = data.compute_tfr(method="morlet", freqs=freqs, n_cycles=cycles, use_fft=True, average=True, n_jobs=jobs, return_itc=True)                         
     return itc
 
-def get_events(matrix, probs, freqs, info, labels, instance='tfr', cycles=2, jobs=1):
+def get_itc_baseline(itc, baseline):
+    left, right = baseline
+
+    if left != None: left = int(itc.info['sfreq'] * -(itc.tmin - left))
+    else: left = 0
+    
+    if right != None: right = int(itc.info['sfreq']* - right)
+    else: right = -1
+        
+    return np.average(itc._data[:,:,left:right], axis=(0,2))
+
+def get_events(matrix, probs, freqs, info, labels, baseline=None, instance='tfr', cycles=2, jobs=1):
     events = []
 
     for n_event in range(probs.shape[1]):                                   
@@ -34,7 +44,7 @@ def get_events(matrix, probs, freqs, info, labels, instance='tfr', cycles=2, job
 
             if center > 0: #only add the data if an event onset was found
                 match instance:
-                    case 'tfr' | 'phases': event.append((matrix[trial, :, :, :center], matrix[trial, :, :, center], matrix[trial, :, :, center+1:]))
+                    case 'tfr': event.append((matrix[trial, :, :, :center], matrix[trial, :, :, center], matrix[trial, :, :, center+1:]))
                     case 'itc' | 'eeg': event.append((matrix[trial, :, :center], matrix[trial, :, center], matrix[trial, :, center+1:]))
 
         if len(event) > 0:
@@ -49,6 +59,7 @@ def get_events(matrix, probs, freqs, info, labels, instance='tfr', cycles=2, job
                     center, centred_matrix = center_matrix(event, instance=instance)
                     centred_epochs = mne.EpochsArray(np.nan_to_num(centred_matrix, nan=0.0), info, tmin=-(center/info['sfreq']))
                     event = get_itc(centred_epochs, freqs, jobs=jobs, cycles=cycles)
+                    for x, y in enumerate((event.shape[0], event.shape[1])): event._data[x, :, y] -= baseline
                     del centred_matrix #delete centred matrix to save data
                 case 'eeg':
                     center, centred_matrix = center_matrix(event, instance=instance)
@@ -62,7 +73,7 @@ def get_events(matrix, probs, freqs, info, labels, instance='tfr', cycles=2, job
 
 def center_matrix(matrix, instance='tfr'):
     match instance:
-        case 'tfr' | 'phases': #center TFRs/phases (trials, channels, frequencies, time)
+        case 'tfr': #center TFRs/phases (trials, channels, frequencies, time)
             #create empty matrix
             left = np.amax([matrix[x][0].shape[2] for x in range(len(matrix))])
             right = np.amax([matrix[x][2].shape[2] for x in range(len(matrix))])
@@ -88,29 +99,6 @@ def center_matrix(matrix, instance='tfr'):
                 event_data[n, :, (left+1):((left+1) + epoch[2].shape[1])] = epoch[2]
 
     return left, event_data
-
-def adaptive_xaxis(event, measure='time'):
-    i = 0
-    left = -np.inf
-    right = np.inf 
-
-    #look at the ith matrix from the center until there is an NaN found
-    while True:
-        if np.isnan(event._data[:,:, int(event.tmin*-event.sfreq + i)]).any(): #there is an NaN found on the right
-            if right == np.inf:
-                right = i - 1
-
-        if np.isnan(event._data[:,:, int(event.tmin*-event.sfreq - i)]).any(): #there is an NaN found on the left
-            if left == -np.inf:
-                left = i - 1
-
-        #return if both sides have found an NaN, extend if not
-        if left > -np.inf and right < np.inf:
-            match measure: 
-                case 'time': return -left/event.sfreq, right/event.sfreq
-                case 'samples': return int((-event.tmin*event.sfreq) - left), int((-event.tmin*event.sfreq) + right + 1)
-        else:
-            i += 1
 
 def combine_participants(directory_name, centers=None, instance='tfr', combine=True):
     
@@ -178,23 +166,117 @@ def combine_participants(directory_name, centers=None, instance='tfr', combine=T
     if centers != None: return (dict, centers)
     else: return dict          
 
+def adaptive_xaxis(event, measure='time'):
+
+    #initialize variables
+    i = 0                       #i (int): an index for how far the pointer is removed from the center
+    left = -np.inf              #left (int): starts at -np.inf, converges to i - 1 once the pointer runs into and NaN on the left side
+    right = np.inf              #right (int): starts at np.inf, converges to i - 1 once the pointer runs into and NaN on the right side
+
+
+    #look at the ith matrix from the center until there is an NaN found
+    while True:
+        if np.isnan(event._data[:,:, int(event.tmin*-event.sfreq + i)]).any(): #there is an NaN found on the right
+            if right == np.inf:
+                right = i - 1
+
+        if np.isnan(event._data[:,:, int(event.tmin*-event.sfreq - i)]).any(): #there is an NaN found on the left
+            if left == -np.inf:
+                left = i - 1
+
+        #return if both sides have found an NaN, extend if not
+        if left > -np.inf and right < np.inf:
+            match measure: 
+                case 'time': return -left/event.sfreq, right/event.sfreq
+                case 'samples': return math.ceil((-event.tmin*event.sfreq) - left), math.floor((-event.tmin*event.sfreq) + right + 1)
+        else:
+            i += 1
+
 def plot_topos(dict, vlim=None):
-    
+
+    #extract events from dictionary
+    events = copy.copy(dict)
+    events.pop('total')
+
+    #set variables
     bandwidths = {
-        'delta': (0,4),
-        'theta': (5,8),
-        'alpha': (9,12),
-        'beta': (13,25),
+        'delta': (1,4),
+        'theta': (4,8),
+        'alpha': (8,12),
+        'beta': (12,25),
         'gamma': (25,40)
     }
+    n_events = len(events.values())
+    n_bandwidths = len(bandwidths.values())
 
-    
-    _, ax = plt.subplots(len(dict.values()), len(bandwidths.values()), figsize=(24,4*len(dict.values())))
-    for y, (label, event) in enumerate(dict.items()): 
-        for x, (fname, (flow, fhigh)) in enumerate(bandwidths.items()):
-            event.plot_topomap(tmin=0, tmax=0, fmin=flow, fmax=fhigh, axes=ax[y, x], show=False, cmap='turbo', vlim=vlim)
-            ax[y, x].set_title(fname)
+    #plot the topo for each (bandwidth: y, event: x) combination
+    _, ax = plt.subplots(n_bandwidths, n_events, figsize=(6 + 6*n_events, 32))
+    for y, (fname, (flow, fhigh)) in enumerate(bandwidths.items()):
+        for x, (label, event) in enumerate(events.items()): 
+            event.plot_topomap(tmin=0, tmax=0, fmin=flow, fmax=fhigh, axes=ax[y, x], show=False, cmap='turbo', vlim=vlim, show_names=True)
+            ax[y, x].set_title(label) 
 
-        ax[y, 0].set_ylabel(label, fontsize=16, rotation=90, labelpad=20)
+        #y-axis label
+        ax[y, 0].set_ylabel(fname, fontsize=16, rotation=90, labelpad=20)
 
+def plot_tfr(dict, eeg, channels, vlim=(-3,3), tmin=-0.2, tmax=0.2, statistic_dict=None):
+
+    #create subplots
+    _, ax = plt.subplots(len(channels) + 1, len(dict.values()), figsize=(32,6 + 6*len(dict.values())))
+
+    #for every (event: x) plot raw event on the first row
+    for x, (label, event) in enumerate(eeg.items()):
+        mne.viz.plot_topomap(event._data[:, int(-event.tmin*event.info['sfreq'])], event.info, show=False, names=event.info['ch_names'], cmap='turbo', axes=ax[0, x])
+        ax[0, x].set_title(label)
+        ax[0, x].legend()
+        ax[0, x].set_ylabel("amplitude (\u03BCV)")
+
+    #remove the empty subplot on the first row
+    ax[0, -1].remove() 
+
+
+    #plot the tfr for each (channel: y, event: x) combination
+    for y, channel in enumerate(channels):
+        for x, (label, event) in enumerate(dict.items()):
+
+            #if permutation, create mask
+            if statistic_dict != None: mask = permutation_test(statistic_dict, label, channel)
+
+            match label: 
+                #plot total tfr
+                case 'total':
+                    min, max = adaptive_xaxis(event)
+                    event.plot(cmap='turbo', picks=[channel], tmin=min, tmax=max, vlim=vlim, show=False, axes=ax[y + 1, x])
+
+                #plot event tfr
+                case _:
+                    if 'mask' in locals():
+                        event.plot(cmap='gray', picks=[channel], tmin=tmin, tmax=tmax, vlim=vlim, show=False, axes=ax[y + 1, x], colorbar=False)
+                        
+                        if type(mask) == np.ndarray:
+                            bar = True 
+                            for m in range(mask.shape[0]): 
+                                event.plot(cmap='turbo', picks=[channel], tmin=tmin, tmax=tmax, vlim=vlim, show=False, axes=ax[y + 1, x], mask=mask[m, :, int(event.tmin*-event.sfreq-40):int(event.tmin*-event.sfreq+41)], colorbar=bar)
+                                bar = False
+                    else:
+                        event.plot(cmap='turbo', picks=[channel], tmin=tmin, tmax=tmax, vlim=vlim, show=False, axes=ax[y + 1, x])
+
+            ax[y+1, x].set_title(label)
+
+        ax[y+1, 0].annotate(channel, xy=(-0.28, 0.5), xycoords="axes fraction",
+            rotation=90, va="center", ha="center", fontsize=18)
+
+def permutation_test(dict, label, channel):
+    data = np.stack([x._data.astype('float16') for x in dict[label]])
+    event = dict[label][0]
+    data = np.average(data, axis=1) - data[:,event.info['ch_names'].index(channel),:,:]
+
+
+    t_obs, clusters, cluster_pv, H0 = mne.stats.permutation_cluster_1samp_test(data, n_permutations=1000, tail=0, n_jobs=-1, out_type='mask')
+    indices = np.where(cluster_pv <= 0.05)
+    if indices[0].shape[0] > 0: 
+        return np.stack([clusters[x] for x in indices[0]])
+    else: 
+        print("No mask found for TFR")
+        return None
   
